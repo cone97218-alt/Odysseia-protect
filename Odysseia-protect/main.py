@@ -7,6 +7,7 @@ Bot 主入口文件。
 import asyncio
 import logging
 import os
+import sys
 from pathlib import Path
 
 import discord
@@ -22,12 +23,20 @@ from src.services.download_service import DownloadService
 from src.services.management_service import ManagementService
 from src.services.reaction_wall_service import ReactionWallService
 
-# --- 日志配置 ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - [%(levelname)s] - %(name)s: %(message)s",
-)
+
+# --- 可选的 uvloop 性能加速 ---
+# 在非 Windows 系统上，尝试启用 uvloop 以获得更好的性能。
+# 如果未安装 uvloop，则会回退到标准的 asyncio 事件循环。
+if sys.platform != "win32":
+    try:
+        import uvloop
+
+        uvloop.install()
+        logging.info("检测到非 Windows 环境，已成功启用 uvloop。")
+    except ImportError:
+        logging.info("未找到 uvloop，将使用默认的 asyncio 事件循环。")
 logger = logging.getLogger(__name__)
+
 
 # --- 环境变量 ---
 load_dotenv()
@@ -131,6 +140,10 @@ async def main():
 # --- 运行主程序 ---
 if __name__ == "__main__":
     try:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - [%(levelname)s] - %(name)s: %(message)s",
+        )
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("检测到键盘中断，程序已终止。")
