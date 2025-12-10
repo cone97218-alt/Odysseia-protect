@@ -12,7 +12,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///bot_database.db")
 
 # 创建异步数据库引擎
 # echo=True 会打印所有执行的SQL语句，便于调试
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(DATABASE_URL)
 
 # 创建一个异步会话生成器
 # expire_on_commit=False 防止在提交后 ORM 对象的属性被过期
