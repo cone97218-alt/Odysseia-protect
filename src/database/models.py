@@ -69,6 +69,7 @@ class Resource(Base):
     source_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=func.now())
+    download_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # --- 关系 ---
     # 多个 Resource 属于一个 Thread

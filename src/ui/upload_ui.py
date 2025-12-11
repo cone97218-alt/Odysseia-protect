@@ -4,7 +4,7 @@
 """
 
 import logging
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Union, List
 
 import discord
 
@@ -49,9 +49,10 @@ class PrivacyPolicyView(discord.ui.View):
         # 2. 弹出上传表单，这是对按钮点击交互的唯一响应。
         # 根据模式决定弹出哪个模态框
         if self.mode == "secure":
+            assert self.file is not None
             modal = SecureUploadModal(
                 service=self.service,
-                file=self.file,
+                files=self.file,
             )
         else:  # normal mode
             modal = NormalUploadModal(
@@ -67,8 +68,12 @@ class PrivacyPolicyView(discord.ui.View):
                 item.disabled = True
 
         # 安全检查，确保 message 对象存在
+        # 经过测试，编辑一个已经响应过的交互的原始消息（特别是临时的）
+        # 很容易导致 "Unknown Message" 错误，因此我们删除这一步。
+        # 功能上，模态框已经弹出，核心流程已经完成。
         if interaction.message:
-            await interaction.message.edit(view=self)
+            # await interaction.message.edit(view=self)
+            pass
 
     @discord.ui.button(label="拒绝", style=discord.ButtonStyle.danger)
     async def disagree(
@@ -123,10 +128,16 @@ class NormalUploadModal(discord.ui.Modal, title="上传普通文件 - 填写信�
 class SecureUploadModal(discord.ui.Modal, title="上传受保护文件 - 填写信息"):
     """用于受保护文件上传的模态框，包含版本和密码信息。"""
 
-    def __init__(self, service: "UploadService", file: Optional[discord.Attachment]):
+    def __init__(
+        self,
+        service: "UploadService",
+        files: Union[discord.Attachment, List[discord.Attachment]],
+        source_message: Optional[discord.Message] = None,
+    ):
         super().__init__()
         self.service = service
-        self.file = file
+        self.files = files
+        self.source_message = source_message
 
         self.version_info_input = discord.ui.TextInput(
             label="版本信息",
@@ -151,12 +162,33 @@ class SecureUploadModal(discord.ui.Modal, title="上传受保护文件 - 填写�
             "⏳ 正在处理您的上传，请稍候...", ephemeral=True
         )
         async with AsyncSessionLocal() as session:
-            result_message = await self.service.handle_upload_submission(
-                session,
-                interaction=interaction,
-                mode="secure",
-                file=self.file,
-                version_info=self.version_info_input.value,
-                password=self.password_input.value or None,
-            )
+            if isinstance(self.files, list):
+                # 来自上下文菜单的多文件上传
+                result_message = (
+                    await self.service.handle_secure_upload_submission_from_message(
+                        session,
+                        interaction=interaction,
+                        attachments=self.files,
+                        version_info=self.version_info_input.value,
+                        password=self.password_input.value or None,
+                    )
+                )
+            else:
+                # 来自 /上传 命令的单文件上传
+                result_message = await self.service.handle_upload_submission(
+                    session,
+                    interaction=interaction,
+                    mode="secure",
+                    file=self.files,
+                    version_info=self.version_info_input.value,
+                    password=self.password_input.value or None,
+                )
         await interaction.edit_original_response(content=result_message)
+        # 如果上传成功且源消息存在，则删除源消息
+        if self.source_message and result_message.startswith("✅"):
+            try:
+                await self.source_message.delete()
+            except discord.HTTPException as e:
+                logger.warning(
+                    f"删除上下文菜单的源消息 {self.source_message.id} 失败: {e}"
+                )

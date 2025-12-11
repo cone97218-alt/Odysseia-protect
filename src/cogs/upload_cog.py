@@ -7,6 +7,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import logging
 
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +16,7 @@ from src.database.database import AsyncSessionLocal
 if TYPE_CHECKING:
     from main import OdysseiaProtect
 
+logger = logging.getLogger(__name__)
 
 # ===================================================================================
 # 定义 UploadCog 类
@@ -80,6 +82,15 @@ class UploadCog(commands.Cog):
         file: discord.Attachment | None = None,
         message_link: str | None = None,
     ):
+        if not isinstance(interaction.channel, discord.Thread) or not isinstance(
+            interaction.channel.parent, discord.ForumChannel
+        ):
+            await interaction.response.send_message(
+                "❌ **操作无效**\n此命令只能在论坛帖子中使用。",
+                ephemeral=True,
+            )
+            return
+
         if mode == "secure" and not file:
             await interaction.response.send_message(
                 "❌ **参数错误**\n您选择了 **受保护文件**，但未提供文件附件。",
@@ -102,7 +113,25 @@ class UploadCog(commands.Cog):
                 message_link=message_link,
             )
 
-        await self._handle_service_result(interaction, result)
+        # For deferred interactions, we need to use followup.send
+        if interaction.response.is_done():
+            if isinstance(result, dict):
+                embed = result.get("embed")
+                view = result.get("view")
+                if embed:
+                    if view and isinstance(view, discord.ui.View):
+                        await interaction.followup.send(
+                            embed=embed, view=view, ephemeral=True
+                        )
+                    else:
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send("发生未知错误。", ephemeral=True)
+            elif isinstance(result, discord.ui.Modal):
+                # Modals cannot be sent as followups. This path should not be hit with defer.
+                pass
+        else:
+            await self._handle_service_result(interaction, result)
 
 
 # ===================================================================================
@@ -121,6 +150,15 @@ async def setup(bot: "OdysseiaProtect"):
     async def upload_normal_context_menu(
         interaction: discord.Interaction, message: discord.Message
     ):
+        if not isinstance(interaction.channel, discord.Thread) or not isinstance(
+            interaction.channel.parent, discord.ForumChannel
+        ):
+            await interaction.response.send_message(
+                "❌ **操作无效**\n此命令只能在论坛帖子中使用。",
+                ephemeral=True,
+            )
+            return
+
         # 我们直接使用从 setup 传递进来的、类型正确的 bot 实例
         async with AsyncSessionLocal() as session:
             result = await bot.upload_service.handle_upload(
@@ -135,9 +173,68 @@ async def setup(bot: "OdysseiaProtect"):
         cog_instance = bot.get_cog("UploadCog")
         # 通过 isinstance 类型守卫，让 Pylance 知道 cog_instance 是 UploadCog 类型
         if isinstance(cog_instance, UploadCog):
-            await cog_instance._handle_service_result(interaction, result)
+            if interaction.response.is_done():
+                if isinstance(result, dict):
+                    embed = result.get("embed")
+                    view = result.get("view")
+                    if embed:
+                        if view and isinstance(view, discord.ui.View):
+                            await interaction.followup.send(
+                                embed=embed, view=view, ephemeral=True
+                            )
+                        else:
+                            await interaction.followup.send(embed=embed, ephemeral=True)
+                    else:
+                        await interaction.followup.send(
+                            "发生未知错误。", ephemeral=True
+                        )
+            else:
+                await cog_instance._handle_service_result(interaction, result)
         else:
             # 兜底错误处理：理论上不应该发生，因为我们马上就要注册它
+            await interaction.followup.send("处理上传时发生内部错误。", ephemeral=True)
+
+    @app_commands.context_menu(name="上传为受保护资源")
+    async def upload_secure_context_menu(
+        interaction: discord.Interaction, message: discord.Message
+    ):
+        if not isinstance(interaction.channel, discord.Thread) or not isinstance(
+            interaction.channel.parent, discord.ForumChannel
+        ):
+            await interaction.response.send_message(
+                "❌ **操作无效**\n此命令只能在论坛帖子中使用。",
+                ephemeral=True,
+            )
+            return
+
+        if not message.attachments:
+            await interaction.response.send_message(
+                "❌ **操作无效**\n您选择的消息中没有任何附件可供保护。",
+                ephemeral=True,
+            )
+            return
+
+        async with AsyncSessionLocal() as session:
+            result = await bot.upload_service.handle_secure_upload_from_message(
+                session,
+                interaction=interaction,
+                message=message,
+            )
+
+        cog_instance = bot.get_cog("UploadCog")
+        if isinstance(cog_instance, UploadCog):
+            if isinstance(result, discord.ui.Modal):
+                await interaction.response.send_modal(result)
+            elif isinstance(result, dict):
+                # 如果返回字典，说明是权限错误
+                embed = result.get("embed")
+                if embed:
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.response.send_message(
+                        "发生未知错误。", ephemeral=True
+                    )
+        else:
             await interaction.response.send_message(
                 "处理上传时发生内部错误。", ephemeral=True
             )
@@ -145,3 +242,4 @@ async def setup(bot: "OdysseiaProtect"):
     # --- 步骤 2: 将 Cog 和手动定义的上下文菜单命令都添加到 Bot ---
     await bot.add_cog(UploadCog(bot))
     bot.tree.add_command(upload_normal_context_menu)
+    bot.tree.add_command(upload_secure_context_menu)

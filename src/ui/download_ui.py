@@ -194,6 +194,21 @@ class ResourceSelectView(discord.ui.View):
                 return
             # --- 链接获取结束 ---
 
+            # --- 下载计数 ---
+            try:
+                selected_resource.download_count += 1
+                session.add(selected_resource)
+                await session.commit()
+                logger.info(
+                    f"资源 {selected_resource.id} 的下载计数已增加至 {selected_resource.download_count}"
+                )
+            except Exception as e:
+                await session.rollback()
+                logger.error(
+                    f"为资源 {selected_resource.id} 增加下载计数失败", exc_info=e
+                )
+            # --- 下载计数结束 ---
+
             if selected_resource.password:
                 modal = PasswordModal(resource=selected_resource, fresh_url=fresh_url)
                 # 修复：直接响应模态框，这是此代码路径的第一次也是唯一一次响应。

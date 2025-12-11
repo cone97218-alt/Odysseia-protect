@@ -101,23 +101,26 @@ class UploadService(BaseService):
             )
             return {"embed": embed, "view": view}
 
-        # --- 作者鉴权 ---
-        thread_model = await self._get_or_create_thread(
-            session, interaction=interaction
-        )
-        if thread_model.author_id != interaction.user.id:
-            embed = discord.Embed(
-                title="🚫 权限不足",
-                description="抱歉，只有本帖的作者才能上传资源。",
-                color=discord.Color.red(),
-            )
-            return {"embed": embed}
-
         # 用户已同意，根据模式返回不同的模态框
         if mode == "secure":
-            return SecureUploadModal(service=self, file=file)
+            assert file is not None
+            return SecureUploadModal(service=self, files=file)
         else:  # normal mode
             return NormalUploadModal(service=self, message_link=message_link)
+
+    async def handle_secure_upload_from_message(
+        self,
+        session: AsyncSession,
+        *,
+        interaction: discord.Interaction,
+        message: discord.Message,
+    ) -> Union[dict[str, Any], SecureUploadModal]:
+        """从消息上下文菜单开始受保护文件的上传流程，返回一个模态框。"""
+
+        # 对于上下文菜单，我们跳过隐私协议检查，直接返回模态框
+        return SecureUploadModal(
+            service=self, files=message.attachments, source_message=message
+        )
 
     async def handle_upload_submission(
         self,
@@ -143,6 +146,13 @@ class UploadService(BaseService):
         )
 
         try:
+            # --- 权限检查（从 handle_upload 移至此处） ---
+            thread_model = await self._get_or_create_thread(
+                session, interaction=interaction
+            )
+            if thread_model.author_id != interaction.user.id:
+                return "🚫 **权限不足**\n抱歉，只有本帖的作者才能上传资源。"
+
             if mode == "secure":
                 # 断言 file 存在，因为 Cog 层已经校验过
                 assert file is not None
@@ -176,22 +186,16 @@ class UploadService(BaseService):
             await session.rollback()
             return "❌ 上传过程中发生了一个未知的内部错误，操作已被取消。请联系管理员。"
 
-    async def _handle_secure_upload(
+    async def _find_or_create_warehouse_thread(
         self,
         session: AsyncSession,
-        *,
         interaction: discord.Interaction,
-        file: discord.Attachment,
-        version_info: Optional[str],
-        password: Optional[str],
-    ) -> str:
-        """处理受保护文件的上传逻辑，文件将被上传到私密的论坛帖子中。"""
-        # 断言以帮助 Pylance 理解类型，即使我们在上层已经检查过
-        assert isinstance(interaction.channel, (discord.TextChannel, discord.Thread))
-
+        thread_model,
+    ) -> discord.Thread:
+        """查找或创建一个与公开帖子关联的私密仓库帖子，确保逻辑统一。"""
         # 1. 检查仓库频道是否已配置
         if not self.warehouse_channel_id:
-            return "❌ 错误：管理员未配置仓库频道，受保护文件功能当前不可用。"
+            raise ValueError("管理员未配置仓库频道，受保护文件功能当前不可用。")
 
         # 2. 获取仓库论坛频道并验证其类型
         try:
@@ -201,17 +205,12 @@ class UploadService(BaseService):
                     f"仓库频道ID {self.warehouse_channel_id} 是一个 "
                     f"'{type(warehouse_forum).__name__}'，而不是预期的论坛频道。"
                 )
-                return "❌ 错误：服务器内部配置错误（仓库频道必须是论坛）。"
+                raise ValueError("服务器内部配置错误（仓库频道必须是论坛）。")
         except (discord.NotFound, discord.Forbidden) as e:
             logger.error(f"无法访问仓库论坛频道 {self.warehouse_channel_id}: {e}")
-            return "❌ 错误：无法访问仓库频道，请管理员检查ID和Bot权限。"
+            raise ValueError("无法访问仓库频道，请管理员检查ID和Bot权限。")
 
-        # 3. 获取或创建当前公开帖子的数据库记录
-        thread_model = await self._get_or_create_thread(
-            session, interaction=interaction
-        )
-
-        # 4. 查找或创建对应的私密仓库帖子
+        # 3. 尝试获取已存在的仓库帖子
         warehouse_thread = None
         if thread_model.warehouse_thread_id:
             try:
@@ -225,8 +224,13 @@ class UploadService(BaseService):
                     f"仓库帖子 {thread_model.warehouse_thread_id} 在Discord中找不到了，将创建一个新的。"
                 )
 
+        # 4. 如果不存在，则创建新的仓库帖子
         if not warehouse_thread:
             try:
+                # 断言 interaction.channel 是支持 .name 和 .id 的类型
+                assert isinstance(
+                    interaction.channel, (discord.TextChannel, discord.Thread)
+                )
                 public_name = (
                     interaction.channel.name
                     if hasattr(interaction.channel, "name")
@@ -266,36 +270,146 @@ class UploadService(BaseService):
                     db_obj=thread_model,
                     obj_in={"warehouse_thread_id": warehouse_thread.id},
                 )
+                await session.flush()  # 确保更新能被同一事务中的后续操作看到
             except discord.HTTPException as e:
                 logger.error(f"在仓库论坛 {warehouse_forum.id} 中创建帖子失败: {e}")
-                return "❌ 错误：创建安全存储帖子失败。"
+                raise IOError("创建安全存储帖子失败。")
 
-        # 5. 将文件上传到仓库帖子
-        # 断言 warehouse_thread 是一个帖子，以消除 Pylance 的类型歧义
-        assert isinstance(warehouse_thread, discord.Thread), (
-            "仓库频道必须是一个帖子才能发送消息"
-        )
+        # 5. 断言并返回
+        assert isinstance(warehouse_thread, discord.Thread)
+        return warehouse_thread
+
+    async def _handle_secure_upload(
+        self,
+        session: AsyncSession,
+        *,
+        interaction: discord.Interaction,
+        file: discord.Attachment,
+        version_info: Optional[str],
+        password: Optional[str],
+    ) -> str:
+        """处理受保护文件的上传逻辑，文件将被上传到私密的论坛帖子中。"""
+        assert isinstance(interaction.channel, (discord.TextChannel, discord.Thread))
         try:
+            # 1. 获取或创建当前公开帖子的数据库记录
+            thread_model = await self._get_or_create_thread(
+                session, interaction=interaction
+            )
+
+            # 2. 统一调用函数来查找或创建仓库帖子
+            warehouse_thread = await self._find_or_create_warehouse_thread(
+                session, interaction, thread_model
+            )
+
+            # 3. 将文件上传到仓库帖子
             message = await warehouse_thread.send(file=await file.to_file())
-            # 关键修复：不再清理URL，存储完整的、带有时效性签名的URL
-            # download_url = message.attachments[0].url # 字段已被移除
-        except discord.HTTPException as e:
-            logger.error(f"上传文件到仓库帖子 {warehouse_thread.id} 失败: {e}")
-            return "❌ 错误：上传文件到仓库失败。可能文件过大或API问题。"
 
-        # 6. 在数据库中创建资源记录
-        resource_data = ResourceCreate(
-            thread_id=thread_model.id,
-            upload_mode=UploadMode.SECURE,
-            filename=file.filename,
-            version_info=version_info or "未提供",
-            source_message_id=message.id,  # 关键修复: 使用仓库消息的ID
-            password=password,
+            # 4. 在数据库中创建资源记录
+            resource_data = ResourceCreate(
+                thread_id=thread_model.id,
+                upload_mode=UploadMode.SECURE,
+                filename=file.filename,
+                version_info=version_info or "未提供",
+                source_message_id=message.id,
+                password=password,
+            )
+            await self.resource_repo.create(session, obj_in=resource_data)
+
+            logger.info(f"受保护文件上传成功: {file.filename} -> {warehouse_thread.id}")
+            return f"✅ 受保护文件上传成功！文件 `{file.filename}` 已被安全存储。"
+        except (ValueError, IOError, discord.HTTPException) as e:
+            logger.error(f"处理受保护文件上传时失败: {e}")
+            return f"❌ 错误: {e}"
+
+    async def handle_secure_upload_submission_from_message(
+        self,
+        session: AsyncSession,
+        *,
+        interaction: discord.Interaction,
+        attachments: list[discord.Attachment],
+        version_info: str,
+        password: Optional[str],
+    ) -> str:
+        """处理来自多附件上传模态框的提交。"""
+        try:
+            result_message = (
+                await self._handle_secure_upload_submission_from_attachments(
+                    session,
+                    interaction=interaction,
+                    attachments=attachments,
+                    version_info=version_info,
+                    password=password,
+                )
+            )
+            await session.commit()
+            return result_message
+        except PermissionError as e:
+            logger.warning(
+                f"用户 {interaction.user.id} 尝试在不属于他们的帖子中上传: {e}"
+            )
+            await session.rollback()
+            return f"🚫 **权限不足**\n{e}"
+        except Exception as e:
+            logger.error(
+                "处理来自消息的多附件安全上传时出错，将回滚事务。",
+                exc_info=e,
+            )
+            await session.rollback()
+            return f"❌ 上传失败: 处理附件时发生内部错误: {e}"
+
+    async def _handle_secure_upload_submission_from_attachments(
+        self,
+        session: AsyncSession,
+        *,
+        interaction: discord.Interaction,
+        attachments: list[discord.Attachment],
+        version_info: str,
+        password: Optional[str],
+    ) -> str:
+        """处理多个附件的安全上传的后端逻辑。"""
+        assert isinstance(interaction.channel, (discord.TextChannel, discord.Thread))
+
+        # 1. 获取或创建数据库记录
+        thread_model = await self._get_or_create_thread(
+            session, interaction=interaction
         )
-        await self.resource_repo.create(session, obj_in=resource_data)
 
-        logger.info(f"受保护文件上传成功: {file.filename} -> {warehouse_thread.id}")
-        return f"✅ 受保护文件上传成功！文件 `{file.filename}` 已被安全存储。"
+        # 2. 权限检查
+        if thread_model.author_id != interaction.user.id:
+            raise PermissionError("抱歉，只有本帖的作者才能上传资源。")
+
+        # 3. 统一调用函数来查找或创建仓库帖子
+        warehouse_thread = await self._find_or_create_warehouse_thread(
+            session, interaction, thread_model
+        )
+
+        # 4. 上传所有附件并创建资源记录
+        uploaded_files = []
+        for attachment in attachments:
+            try:
+                message = await warehouse_thread.send(file=await attachment.to_file())
+                resource_data = ResourceCreate(
+                    thread_id=thread_model.id,
+                    upload_mode=UploadMode.SECURE,
+                    filename=attachment.filename,
+                    version_info=version_info,
+                    source_message_id=message.id,
+                    password=password,
+                )
+                await self.resource_repo.create(session, obj_in=resource_data)
+                uploaded_files.append(attachment.filename)
+            except discord.HTTPException as e:
+                logger.error(
+                    f"上传附件 {attachment.filename} 到仓库帖子 {warehouse_thread.id} 失败: {e}"
+                )
+                continue  # 跳过失败的附件
+
+        if not uploaded_files:
+            raise IOError("所有附件都上传失败。")
+
+        return f"✅ 成功保护了 {len(uploaded_files)} 个文件:\n- " + "\n- ".join(
+            f"`{f}`" for f in uploaded_files
+        )
 
     async def _handle_normal_upload(
         self,

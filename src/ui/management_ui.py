@@ -153,16 +153,18 @@ class ManagementView(discord.ui.View):
         self.thread = thread
         self.selected_resource_id: Optional[int] = None
 
-        # 初始化并添加组件
-        self.select_menu = self.ResourceManagementSelect(resources)
-        self.edit_button = self.EditButton()
-        self.delete_button = self.DeleteButton()
+        # 只有在有资源的情况下才添加资源管理组件
+        if self.resources:
+            self.select_menu = self.ResourceManagementSelect(resources)
+            self.edit_button = self.EditButton()
+            self.delete_button = self.DeleteButton()
+            self.add_item(self.select_menu)
+            self.add_item(self.edit_button)
+            self.add_item(self.delete_button)
+
+        # 总是添加反应墙管理组件
         self.toggle_reaction_button = self.ToggleReactionWallButton(thread)
         self.set_reaction_emoji_button = self.SetReactionEmojiButton(thread)
-
-        self.add_item(self.select_menu)
-        self.add_item(self.edit_button)
-        self.add_item(self.delete_button)
         self.add_item(self.toggle_reaction_button)
         self.add_item(self.set_reaction_emoji_button)
 
@@ -188,7 +190,11 @@ class ManagementView(discord.ui.View):
                         value=str(r.id),
                     )
                 )
-            super().__init__(placeholder="请选择要操作的资源...", options=options)
+            super().__init__(
+                placeholder="请选择要操作的资源...",
+                options=options,
+                disabled=not options,  # 如果没有选项，禁用菜单
+            )
 
         async def callback(self, interaction: discord.Interaction):
             if not isinstance(self.view, ManagementView):

@@ -28,7 +28,10 @@ def format_resource_list(
             # 为普通资源生成跳转链接
             # 我们假设 interaction.guild_id 总是存在，因为这些命令是仅限服务器的
             message_url = f"https://discord.com/channels/{interaction.guild_id}/{interaction.channel.id}/{r.source_message_id}"
-            line += f" [跳转到消息]({message_url})"
+            line += f" - [跳转到消息]({message_url})"
+        else:
+            # 只为受保护资源显示下载次数
+            line += f" - 📥 下载 {r.download_count} 次"
         lines.append(line)
 
     if len(resource_list) > 10:
