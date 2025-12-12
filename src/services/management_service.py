@@ -79,6 +79,14 @@ class ManagementService(BaseService):
             inline=False,
         )
 
+        quick_mode_status = "已开启" if thread_model.quick_mode_enabled else "已关闭"
+        quick_mode_desc = "开启后，使用 App 命令转存的资源将 **自动删除** 原始消息。"
+        embed.add_field(
+            name=f"⚡ 快捷模式: {quick_mode_status}",
+            value=quick_mode_desc,
+            inline=False,
+        )
+
         if not resources:
             embed.add_field(
                 name="资源列表",

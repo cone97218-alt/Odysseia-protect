@@ -94,18 +94,12 @@ class ResourceSelectView(discord.ui.View):
                 discord_thread = interaction.channel
                 # 获取起始消息
                 try:
-                    # 尝试获取起始消息
-                    starter_message = discord_thread.starter_message
-                    if starter_message is None:
-                        # 如果未缓存，则获取第一条消息
-                        async for msg in discord_thread.history(
-                            limit=1, oldest_first=True
-                        ):
-                            starter_message = msg
-                            break
-                    if starter_message is None:
-                        raise ValueError("无法找到起始消息")
-                except Exception as e:
+                    # 强制从 API 获取最新的消息状态，避免缓存问题
+                    # 帖子的 ID 和它的起始消息的 ID 是相同的
+                    starter_message = await discord_thread.fetch_message(
+                        discord_thread.id
+                    )
+                except (discord.NotFound, discord.Forbidden, Exception) as e:
                     logger.error(f"获取帖子起始消息失败: {e}")
                     await interaction.response.send_message(
                         "❌ 无法验证您的反应，请稍后再试。", ephemeral=True
@@ -147,12 +141,12 @@ class ResourceSelectView(discord.ui.View):
 
                 if not user_has_reacted:
                     emoji_info = (
-                        f"表情 {thread.reaction_emoji}"
+                        f" {thread.reaction_emoji}"
                         if thread.reaction_emoji
                         else "任意表情"
                     )
                     await interaction.response.send_message(
-                        f"❌ 您需要先对本帖的起始消息做出反应（{emoji_info}）才能下载此资源。",
+                        f"❌ 您需要先对本帖的起始消息做出反应[{emoji_info}]才能下载此资源。",
                         ephemeral=True,
                     )
                     return

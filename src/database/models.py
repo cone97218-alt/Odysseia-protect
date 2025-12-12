@@ -38,6 +38,7 @@ class Thread(Base):
     author_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     reaction_required: Mapped[bool] = mapped_column(default=False, nullable=False)
     reaction_emoji: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    quick_mode_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=func.now())
 
     # --- 关系 ---

@@ -168,6 +168,10 @@ class ManagementView(discord.ui.View):
         self.add_item(self.toggle_reaction_button)
         self.add_item(self.set_reaction_emoji_button)
 
+        # 添加快捷模式按钮
+        self.toggle_quick_mode_button = self.ToggleQuickModeButton(thread)
+        self.add_item(self.toggle_quick_mode_button)
+
     async def on_timeout(self):
         """超时后禁用所有组件。"""
         for item in self.children:
@@ -335,6 +339,65 @@ class ManagementView(discord.ui.View):
             # 弹出模态框
             modal = SetReactionEmojiModal(view.service, self.thread)
             await interaction.response.send_modal(modal)
+
+    class ToggleQuickModeButton(discord.ui.Button):
+        def __init__(self, thread: "Thread"):
+            is_enabled = thread.quick_mode_enabled
+            super().__init__(
+                label="关闭快捷模式" if is_enabled else "开启快捷模式",
+                style=(
+                    discord.ButtonStyle.danger
+                    if is_enabled
+                    else discord.ButtonStyle.success
+                ),
+                row=3,
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            if not isinstance(self.view, ManagementView):
+                return
+
+            view = self.view
+            service = view.service
+            thread_to_update = view.thread
+            original_interaction = view.original_interaction
+
+            await interaction.response.defer()
+
+            async with AsyncSessionLocal() as session:
+                try:
+                    fresh_thread = await service.thread_repo.get(
+                        session, id=thread_to_update.id
+                    )
+                    if not fresh_thread:
+                        await interaction.followup.send(
+                            "❌ 错误：找不到帖子。", ephemeral=True
+                        )
+                        return
+
+                    new_status = not fresh_thread.quick_mode_enabled
+                    update_data = {"quick_mode_enabled": new_status}
+                    await service.thread_repo.update(
+                        session,
+                        db_obj=fresh_thread,
+                        obj_in=update_data,
+                    )
+                    await session.commit()
+
+                    refreshed_panel = await service.handle_management_request(
+                        session, interaction=original_interaction
+                    )
+                    await original_interaction.edit_original_response(**refreshed_panel)
+
+                except Exception as e:
+                    await session.rollback()
+                    logger.error(
+                        f"切换快捷模式状态时出错，帖子ID: {thread_to_update.id}",
+                        exc_info=e,
+                    )
+                    await interaction.followup.send(
+                        "❌ 切换状态时发生内部错误。", ephemeral=True
+                    )
 
 
 class SetReactionEmojiModal(discord.ui.Modal, title="设置反应表情"):
