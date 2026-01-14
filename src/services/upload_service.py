@@ -231,12 +231,23 @@ class UploadService(BaseService):
                 assert isinstance(
                     interaction.channel, (discord.TextChannel, discord.Thread)
                 )
-                public_name = (
-                    interaction.channel.name
-                    if hasattr(interaction.channel, "name")
-                    else interaction.channel.id
-                )
-                new_thread_name = f"📦 仓库 | {public_name}"
+                public_channel = interaction.channel
+                
+                # 获取原始名称
+                raw_name = public_channel.name if hasattr(public_channel, "name") else str(public_channel.id)
+                
+                # 构造前缀
+                prefix = "📦 仓库 | "
+                
+                # 限制总长度在 100 以内 (Discord 限制)
+                # 我们取 95 位上限，并为可能的截断留出空间
+                limit = 100 - len(prefix)
+                if len(raw_name) > limit:
+                    safe_name = raw_name[:limit-3] + "..."
+                else:
+                    safe_name = raw_name
+
+                new_thread_name = f"{prefix}{safe_name}"
 
                 # 创建一个信息丰富的 Embed 作为启动消息
                 author = interaction.user
